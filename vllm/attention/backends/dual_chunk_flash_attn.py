@@ -180,14 +180,15 @@ class DualChunkFlashAttentionMetadata(FlashAttentionMetadata):
             dtype=decode_metadata.block_tables.dtype,
             device=decode_metadata.block_tables.device,
         )
+        chunk_starts = chunk_num_curr * chunk_len // self.block_size
+        max_blocks_intra = (max_seq_len_intra - 1) // self.block_size + 1
+        cache_blocks = (cache_seq_lens - 1) // self.block_size + 1
+
         for i in range(batch_size):
-            st = chunk_num_curr[i] * chunk_len // self.block_size
-            ed = min(
-                st + (max_seq_len_intra - 1) // self.block_size + 1,
-                (cache_seq_lens[i] - 1) // self.block_size + 1,
-            )
-            block_tables_intra[i, :ed -
-                               st] = decode_metadata.block_tables[i, st:ed]
+            st = chunk_starts[i].item()
+            ed = min(st + max_blocks_intra, cache_blocks[i].item())
+            if ed > st:
+                block_tables_intra[i, :ed - st] = decode_metadata.block_tables[i, st:ed]
         decode_metadata.block_tables_intra = block_tables_intra
 
         seq_lens_succ = (chunk_num_curr -
@@ -407,13 +408,12 @@ class DualChunkFlashAttentionImpl(FlashAttentionImpl):
                 "fused output quantization is not yet supported"
                 " for FlashAttentionImpl")
 
-        (
-            query,
-            query_succ,
-            query_inter,
-            query_succ_critical,
-            query_inter_critical,
-        ) = torch.split(query, query.shape[-1] // 5, dim=-1)
+        queries = query.chunk(5, dim=-1)
+        query = queries[0]
+        query_succ = queries[1]
+        query_inter = queries[2]
+        query_succ_critical = queries[3]
+        query_inter_critical = queries[4]
 
         assert (
             query_succ is not None and query_inter is not None
@@ -422,11 +422,15 @@ class DualChunkFlashAttentionImpl(FlashAttentionImpl):
         num_tokens, hidden_size = query.shape
 
         # Reshape the query, key, and value tensors.
-        query = query.view(-1, self.num_heads, self.head_size)
-        query_succ = query_succ.view(-1, self.num_heads, self.head_size)
-        query_inter = query_inter.view(-1, self.num_heads, self.head_size)
-        query_succ_critical = query_succ_critical.view(-1, self.num_heads, self.head_size)
-        query_inter_critical = query_inter_critical.view(-1, self.num_heads, self.head_size)
+        num_tokens = query.shape[0]
+        all_queries = torch.cat([query, query_succ, query_inter, 
+                                query_succ_critical, query_inter_critical], dim=-1)
+        all_queries = all_queries.view(num_tokens, 5, self.num_heads, self.head_size)
+        query = all_queries[:, 0]
+        query_succ = all_queries[:, 1]
+        query_inter = all_queries[:, 2]
+        query_succ_critical = all_queries[:, 3]
+        query_inter_critical = all_queries[:, 4]
         key = key.view(-1, self.num_kv_heads, self.head_size)
         value = value.view(-1, self.num_kv_heads, self.head_size)
 
@@ -439,13 +443,15 @@ class DualChunkFlashAttentionImpl(FlashAttentionImpl):
                 assert prefill_meta.orig_seq_lens is not None
                 current_start = 0
                 query_start_loc_cpu = prefill_meta.query_start_loc.cpu()
-                for i in range(len(prefill_meta.orig_seq_lens)):
+                segment_lengths = query_start_loc_cpu[1:] - query_start_loc_cpu[:-1]
+                for i, seg_len in enumerate(segment_lengths):
                     current_end = (current_start +
-                                (query_start_loc_cpu[i + 1] -
-                                    query_start_loc_cpu[i]).item())
-                    key[current_start:current_end].mul_(
+                        (query_start_loc_cpu[i + 1] -
+                            query_start_loc_cpu[i]).item())
+                    seg_len = seg_len.item()
+                    key[current_start:current_start + seg_len].mul_(
                         prefill_meta.scaling_factor[i])
-                    current_start = current_end
+                    current_start += seg_len
                 assert current_end <= attn_metadata.num_prefill_tokens
             if decode_meta := attn_metadata.decode_metadata:
                 assert decode_meta.scaling_factor is not None
@@ -910,31 +916,21 @@ class DualChunkFlashAttentionImpl(FlashAttentionImpl):
                         heads_vertical_size[head_i], max_vertical_topk)
 
                 # store
-                vertical_buffer = torch.full((n_heads, max_vertical_topk),
-                                             int32_max,
-                                             dtype=torch.int64,
-                                             device=q.device)
-                slash_buffer = torch.full((n_heads, max_slash_topk),
-                                          int32_min,
-                                          dtype=torch.int64,
-                                          device=q.device)
-                succ_vertical_buffer = torch.full((n_heads, max_vertical_topk),
-                                                  int32_max,
-                                                  dtype=torch.int64,
-                                                  device=q.device)
-                succ_slash_buffer = torch.full((n_heads, max_slash_topk),
-                                               int32_min,
-                                               dtype=torch.int64,
-                                               device=q.device)
-                inter_vertical_buffer = torch.full(
-                    (n_heads, max_vertical_topk),
-                    int32_max,
-                    dtype=torch.int64,
-                    device=q.device)
-                inter_slash_buffer = torch.full((n_heads, max_slash_topk),
-                                                int32_min,
+                all_vertical_buffers = torch.full((3, n_heads, max_vertical_topk),
+                                                int32_max,
                                                 dtype=torch.int64,
                                                 device=q.device)
+                all_slash_buffers = torch.full((3, n_heads, max_slash_topk),
+                                            int32_min,
+                                            dtype=torch.int64,
+                                            device=q.device)
+
+                vertical_buffer = all_vertical_buffers[0]
+                slash_buffer = all_slash_buffers[0]
+                succ_vertical_buffer = all_vertical_buffers[1]
+                succ_slash_buffer = all_slash_buffers[1]
+                inter_vertical_buffer = all_vertical_buffers[2]
+                inter_slash_buffer = all_slash_buffers[2]
 
                 vertical_size_buffer = torch.empty(size=(n_heads, ),
                                                    dtype=torch.int32,
@@ -1312,9 +1308,7 @@ class DualChunkFlashAttentionImpl(FlashAttentionImpl):
             logits = logits.to(torch.float32)
 
             if return_lse:
-                max_val = torch.max(logits, dim=0).values
-                diff = torch.abs(logits[0] - logits[1])
-                log_sum_exp = max_val + torch.log1p(torch.exp(-diff))
+                log_sum_exp = torch.logsumexp(logits, dim=0)
                 logits_all.append(log_sum_exp)
 
             max_logits = torch.max(logits, dim=0).values
@@ -1556,20 +1550,17 @@ def _vertical_slash_sparse_attention(
 
 def _sum_all_diagonal_matrix(mat: torch.tensor):
     h, n, m = mat.shape
-    # Zero matrix used for padding
-    zero_mat = torch.zeros((h, n, n), device=mat.device)
-    # pads the matrix on left and right
-    mat_padded = torch.cat((zero_mat, mat, zero_mat), -1)
-    # Change the strides
-    mat_strided = mat_padded.as_strided((1, n, n + m),
-                                        (n * (2 * n + m), 2 * n + m + 1, 1))
-    # Sums the resulting matrix's columns
-    sum_diags = torch.sum(mat_strided, 1)
-    return sum_diags[:, 1:]  # drop left bottom corner
+    # Direct diagonal sum without padding
+    diag_sums = torch.zeros(h, n + m - 1, device=mat.device, dtype=mat.dtype)
+    for i in range(n):
+        end_idx = min(m, n + m - 1 - i)
+        if end_idx > 0:
+            diag_sums[:, i:i+end_idx] += mat[:, i, :end_idx]
+    return diag_sums[:, 1:]  # drop left bottom corner
 
 
 def _get_block(block_table: torch.Tensor, block_size: int, begin: int,
                end: int):
     begin_block = begin // block_size
-    end_block = (end - 1) // block_size + 1
-    return block_table[begin_block:end_block]
+    end_block = ((end - 1) // block_size + 1) if end > 0 else 0
+    return block_table[begin_block:end_block] if end_block > begin_block else block_table[:0]
