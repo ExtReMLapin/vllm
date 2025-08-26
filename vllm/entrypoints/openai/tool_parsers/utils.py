@@ -122,3 +122,59 @@ def consume_space(i: int, s: str) -> int:
     while i < len(s) and s[i].isspace():
         i += 1
     return i
+
+
+def sanitize_json_string(json_str: str) -> str:
+    """
+    Sanitize a JSON string by escaping control characters that would make 
+    the JSON invalid.
+    
+    This addresses the issue where model-generated text might contain literal 
+    control characters (like unescaped newlines) in JSON strings, which causes 
+    JSON parsing to fail.
+    
+    Control characters that are escaped:
+    - \x00-\x08: NULL to BACKSPACE  
+    - \x09: TAB
+    - \x0A: LINE FEED (newline)
+    - \x0B-\x0C: VERTICAL TAB, FORM FEED
+    - \x0D: CARRIAGE RETURN  
+    - \x0E-\x1F: Other control characters
+    - \x7F: DELETE
+    
+    Args:
+        json_str: Raw JSON string that may contain control characters
+        
+    Returns:
+        Sanitized JSON string with control characters properly escaped
+    """
+    if not json_str:
+        return json_str
+        
+    # Define control characters to escape
+    # Based on the llama.cpp grammar: [^"\\\x7F\x00-\x1F] 
+    result = []
+    for char in json_str:
+        code = ord(char)
+        if code == 0x00:  # NULL
+            result.append('\\u0000')
+        elif code <= 0x08:  # Control chars 0x01-0x08
+            result.append(f'\\u{code:04x}')
+        elif code == 0x09:  # TAB
+            result.append('\\t')
+        elif code == 0x0A:  # LINE FEED (newline)
+            result.append('\\n')
+        elif code == 0x0B:  # VERTICAL TAB
+            result.append('\\u000b')
+        elif code == 0x0C:  # FORM FEED
+            result.append('\\f')
+        elif code == 0x0D:  # CARRIAGE RETURN
+            result.append('\\r')
+        elif code <= 0x1F:  # Other control chars 0x0E-0x1F
+            result.append(f'\\u{code:04x}')
+        elif code == 0x7F:  # DELETE
+            result.append('\\u007f')
+        else:
+            result.append(char)
+    
+    return ''.join(result)

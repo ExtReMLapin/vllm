@@ -20,7 +20,8 @@ from vllm.entrypoints.openai.tool_parsers.abstract_tool_parser import (
     ToolParser, ToolParserManager)
 from vllm.entrypoints.openai.tool_parsers.utils import (find_common_prefix,
                                                         is_complete_json,
-                                                        partial_json_loads)
+                                                        partial_json_loads,
+                                                        sanitize_json_string)
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
@@ -79,6 +80,8 @@ class Llama3JsonToolParser(ToolParser):
 
         try:
             json_str = match.group(0)
+            # Sanitize the JSON string to handle control characters
+            json_str = sanitize_json_string(json_str)
             # Split by semicolon and strip whitespace
             json_objects = [obj.strip() for obj in json_str.split(';')]
 
@@ -139,12 +142,13 @@ class Llama3JsonToolParser(ToolParser):
                 start_idx = len(self.bot_token) if current_text.startswith(
                     self.bot_token) else 0
                 while start_idx < len(current_text):
+                    # Sanitize the current text segment to handle control characters
+                    current_segment = current_text[start_idx:]
+                    sanitized_segment = sanitize_json_string(current_segment)
                     (obj,
-                     end_idx) = partial_json_loads(current_text[start_idx:],
-                                                   flags)
+                     end_idx) = partial_json_loads(sanitized_segment, flags)
                     is_complete.append(
-                        is_complete_json(current_text[start_idx:start_idx +
-                                                      end_idx]))
+                        is_complete_json(sanitized_segment[:end_idx]))
                     start_idx += end_idx + len('; ')
                     # depending on the prompt Llama can use
                     # either arguments or parameters

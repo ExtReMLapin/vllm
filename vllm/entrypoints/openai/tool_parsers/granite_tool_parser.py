@@ -19,7 +19,8 @@ from vllm.entrypoints.openai.tool_parsers.abstract_tool_parser import (
 from vllm.entrypoints.openai.tool_parsers.utils import (consume_space,
                                                         find_common_prefix,
                                                         is_complete_json,
-                                                        partial_json_loads)
+                                                        partial_json_loads,
+                                                        sanitize_json_string)
 from vllm.logger import init_logger
 from vllm.transformers_utils.tokenizer import AnyTokenizer
 
@@ -56,7 +57,9 @@ class GraniteToolParser(ToolParser):
                                                 tool_calls=[],
                                                 content=model_output)
         try:
-            raw_function_calls = json.loads(stripped)
+            # Sanitize the JSON string to handle control characters
+            sanitized_stripped = sanitize_json_string(stripped)
+            raw_function_calls = json.loads(sanitized_stripped)
             if not isinstance(raw_function_calls, list):
                 raise Exception(
                     f"Expected dict or list, got {type(raw_function_calls)}")
@@ -118,8 +121,10 @@ class GraniteToolParser(ToolParser):
             tool_call_arr = None
             is_complete = None
             try:
-                tool_calls, end_idx = partial_json_loads(
-                    current_text[start_idx:], flags)
+                # Sanitize the current text segment to handle control characters
+                current_segment = current_text[start_idx:]
+                sanitized_segment = sanitize_json_string(current_segment)
+                tool_calls, end_idx = partial_json_loads(sanitized_segment, flags)
                 if type(tool_calls) is list:
                     tool_call_arr = tool_calls
                 else:

@@ -130,3 +130,61 @@ def test_extract_tool_calls_multiple_json_with_surrounding_text(parser):
     assert result.tool_calls[0].function.name == "searchTool"
     assert result.tool_calls[1].function.name == "getOpenIncidentsTool"
     assert result.tool_calls[2].function.name == "searchTool"
+
+
+def test_extract_tool_calls_with_control_characters(parser):
+    # Test with JSON containing control characters (literal newlines)
+    model_output = ('{"name": "write_file", "parameters": {"content": "Line 1\nLine 2\nLine 3", "filename": "test.txt"}}')
+    result = parser.extract_tool_calls(model_output, None)
+
+    assert result.tools_called is True
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].function.name == "write_file"
+    
+    # Check that the arguments contain the properly escaped content
+    import json
+    args = json.loads(result.tool_calls[0].function.arguments)
+    assert args["content"] == "Line 1\nLine 2\nLine 3"
+    assert args["filename"] == "test.txt"
+
+
+def test_extract_tool_calls_with_various_control_chars(parser):
+    # Test with various control characters
+    model_output = ('{"name": "process_text", "parameters": {"text": "Tab:\tNewline:\nCarriage:\rBell:\x07Delete:\x7f"}}')
+    result = parser.extract_tool_calls(model_output, None)
+
+    assert result.tools_called is True
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].function.name == "process_text"
+    
+    # Check that the arguments were parsed correctly
+    import json
+    args = json.loads(result.tool_calls[0].function.arguments)
+    expected_text = "Tab:\tNewline:\nCarriage:\rBell:\x07Delete:\x7f"
+    assert args["text"] == expected_text
+
+
+def test_sanitize_json_string():
+    # Test the sanitize_json_string utility function directly
+    from vllm.entrypoints.openai.tool_parsers.utils import sanitize_json_string
+    
+    # Test with literal newlines
+    input_str = '{"message": "line1\nline2"}'
+    expected = '{"message": "line1\\nline2"}'
+    result = sanitize_json_string(input_str)
+    assert result == expected
+    
+    # Test with various control characters
+    input_str = '{"text": "null:\x00tab:\tbell:\x07newline:\ndelete:\x7f"}'
+    result = sanitize_json_string(input_str)
+    
+    # Should contain escaped versions
+    assert '\\u0000' in result  # null
+    assert '\t' in result  # tab preserved
+    assert '\\u0007' in result  # bell
+    assert '\\n' in result  # newline
+    assert '\\u007f' in result  # delete
+    
+    # Verify the result is valid JSON
+    import json
+    json.loads(result)  # Should not raise an exception
