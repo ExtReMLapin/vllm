@@ -281,6 +281,13 @@ class OpenAIServingChat(OpenAIServing):
                         max_tokens, self.model_config.logits_processor_pattern,
                         self.default_sampling_params)
 
+                # When we have a reasoning parser and tool_choice="required",
+                # disable guided JSON to allow reasoning to happen first
+                if (self.reasoning_parser and request.tool_choice == "required" 
+                    and sampling_params.guided_decoding 
+                    and sampling_params.guided_decoding.json):
+                    sampling_params.guided_decoding = None
+
                 self._log_inputs(request_id,
                                  request_prompts[i],
                                  params=sampling_params,
@@ -513,7 +520,7 @@ class OpenAIServingChat(OpenAIServing):
         # Only one of these will be used, thus previous_texts and
         # all_previous_token_ids will not be used twice in the same iteration.
         if tool_choice_auto or self.reasoning_parser:
-            # These are only required in "auto" tool choice case
+            # These are required for "auto" tool choice case and for reasoning
             all_previous_token_ids = [[]] * num_choices
             # For reasoning parser and tool call all enabled
             added_content_delta_arr = [False] * num_choices
@@ -765,27 +772,70 @@ class OpenAIServingChat(OpenAIServing):
                         current_text = previous_text + delta_text
                         fn_name_returned = function_name_returned[i]
 
+                        # Handle reasoning with required tool choice similar to auto case
                         if self.reasoning_parser:
-                            _, content = \
-                                reasoning_parser.extract_reasoning_content(
-                                    current_text,
-                                    request
-                                )
+                            assert reasoning_parser is not None
+                            assert added_content_delta_arr is not None
+                            assert reasoning_end_arr is not None
+                            assert all_previous_token_ids is not None
+                            
+                            output_token_ids = as_list(output.token_ids)
+                            previous_token_ids = all_previous_token_ids[i]
+                            current_token_ids = previous_token_ids + output_token_ids
+                            
+                            if not reasoning_end_arr[i]:
+                                # Still in reasoning phase
+                                delta_message = (
+                                    reasoning_parser.
+                                    extract_reasoning_content_streaming(
+                                        previous_text,
+                                        current_text,
+                                        delta_text,
+                                        previous_token_ids,
+                                        current_token_ids,
+                                        output_token_ids,
+                                    ))
+                                
+                                # Check if reasoning has ended
+                                if reasoning_parser.is_reasoning_end(output_token_ids):
+                                    reasoning_end_arr[i] = True
+                                    current_token_ids = reasoning_parser.extract_content_ids(
+                                        output_token_ids)
+                                    if delta_message and delta_message.content:
+                                        current_text = delta_message.content
+                                        delta_message.content = None
+                                    else:
+                                        current_text = ""
+                                    all_previous_token_ids[i] = current_token_ids
+                            else:
+                                # Reasoning is done, now handle tool calls
+                                _, content = reasoning_parser.extract_reasoning_content(
+                                    current_text, request)
+                                delta_message, function_name_returned[i] = (
+                                    self.extract_tool_call_required_streaming(
+                                        previous_text=previous_text,
+                                        current_text=content or current_text,
+                                        delta_text=delta_text,
+                                        function_name_returned=fn_name_returned,
+                                        tool_call_idx=history_tool_call_cnt))
                         else:
-                            content = current_text
-                        delta_message, function_name_returned[i] = (
-                            self.extract_tool_call_required_streaming(
-                                previous_text=previous_text,
-                                current_text=content,
-                                delta_text=delta_text,
-                                function_name_returned=fn_name_returned,
-                                tool_call_idx=history_tool_call_cnt))
+                            # No reasoning parser, handle normally
+                            delta_message, function_name_returned[i] = (
+                                self.extract_tool_call_required_streaming(
+                                    previous_text=previous_text,
+                                    current_text=current_text,
+                                    delta_text=delta_text,
+                                    function_name_returned=fn_name_returned,
+                                    tool_call_idx=history_tool_call_cnt))
+                        
                         if (delta_message and delta_message.tool_calls and
                                 delta_message.tool_calls[0].id is not None):
                             history_tool_call_cnt += 1
 
                         # update the previous values for the next iteration
                         previous_texts[i] = current_text
+                        if all_previous_token_ids is not None:
+                            all_previous_token_ids[i] = current_token_ids
 
                     # handle streaming deltas for tools with "auto" tool choice
                     # and reasoning parser
