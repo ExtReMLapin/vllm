@@ -310,30 +310,24 @@ class RequestState:
             and is_still_prefilling
             and self.prompt_processing_start_time is not None
             and num_prompt_tokens > 0
+            and num_computed_tokens != self.last_progress_processed
         ):
             import time
 
             current_time = time.time()
             elapsed_ms = (current_time - self.prompt_processing_start_time) * 1000
 
-            # Send progress update if:
-            # 1. Processed count changed, OR
-            # 2. At least 100ms has passed since last update
-            time_since_last_update = current_time - self.last_progress_time
-            should_send_update = (
-                num_computed_tokens != self.last_progress_processed
-                or time_since_last_update >= 0.1  # 100ms interval
+            # If scheduler sent us a progress update (computed tokens changed),
+            # trust that decision and always include it. The scheduler already
+            # applies time-based filtering, so we don't need to filter again here.
+            prompt_progress = PromptProgress(
+                total=num_prompt_tokens,
+                cache=self.num_cached_tokens,
+                processed=num_computed_tokens,
+                time_ms=elapsed_ms,
             )
-
-            if should_send_update:
-                prompt_progress = PromptProgress(
-                    total=num_prompt_tokens,
-                    cache=self.num_cached_tokens,
-                    processed=num_computed_tokens,
-                    time_ms=elapsed_ms,
-                )
-                self.last_progress_processed = num_computed_tokens
-                self.last_progress_time = current_time
+            self.last_progress_processed = num_computed_tokens
+            self.last_progress_time = current_time
 
         # Check stream interval, but allow progress updates through
         if self.stream_interval > 1:
