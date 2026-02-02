@@ -168,6 +168,9 @@ class Scheduler(SchedulerInterface):
         # number of unfinished requests
         self.num_waiting_for_streaming_input: int = 0
 
+        # Track last progress update time for requests (req_id -> timestamp)
+        self.last_progress_update_time: dict[str, float] = {}
+
         # KV Connector: requests in process of async KV loading or recving
         self.finished_recving_kv_req_ids: set[str] = set()
         self.failed_recving_kv_req_ids: set[str] = set()
@@ -1364,11 +1367,19 @@ class Scheduler(SchedulerInterface):
             prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
 
             # Check if we should send progress updates during prefill
-            should_send_progress = (
+            should_send_progress = False
+            if (
                 request.sampling_params is not None
                 and request.sampling_params.return_progress
                 and request.num_computed_tokens < request.num_prompt_tokens
-            )
+            ):
+                import time
+                current_time = time.time()
+                last_update_time = self.last_progress_update_time.get(req_id, 0)
+                # Send progress if it's been more than 100ms since last update
+                if current_time - last_update_time >= 0.1:
+                    should_send_progress = True
+                    self.last_progress_update_time[req_id] = current_time
 
             if (
                 new_token_ids
@@ -1705,7 +1716,10 @@ class Scheduler(SchedulerInterface):
     def _free_blocks(self, request: Request):
         assert request.is_finished()
         self.kv_cache_manager.free(request)
-        del self.requests[request.request_id]
+        request_id = request.request_id
+        # Clean up progress tracking
+        self.last_progress_update_time.pop(request_id, None)
+        del self.requests[request_id]
 
     def get_num_unfinished_requests(self) -> int:
         num_waiting = len(self.waiting) - self.num_waiting_for_streaming_input
