@@ -318,18 +318,25 @@ class RequestState:
         external_req_id = self.external_req_id
 
         # Calculate prompt progress if requested and still in prefill
+        # We're still in prefill if we haven't generated any output tokens yet
+        is_still_prefilling = (
+            self.detokenizer is not None
+            and len(self.detokenizer.output_token_ids) == 0
+        )
+
         prompt_progress: PromptProgress | None = None
         if (
             self.return_progress
-            and self.is_prefilling
+            and is_still_prefilling
             and self.prompt_processing_start_time is not None
-            and num_computed_tokens > self.last_progress_processed
+            and num_prompt_tokens > 0
+            and num_computed_tokens != self.last_progress_processed
         ):
             import time
 
             elapsed_ms = (time.time() - self.prompt_processing_start_time) * 1000
             prompt_progress = PromptProgress(
-                total=num_prompt_tokens if num_prompt_tokens > 0 else self.prompt_len,
+                total=num_prompt_tokens,
                 cache=self.num_cached_tokens,
                 processed=num_computed_tokens,
                 time_ms=elapsed_ms,
