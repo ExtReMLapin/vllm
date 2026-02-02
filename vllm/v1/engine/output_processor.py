@@ -185,6 +185,7 @@ class RequestState:
         self.return_progress = False
         self.prompt_processing_start_time: float | None = None
         self.last_progress_processed = 0
+        self.last_progress_time = 0.0
 
     def apply_streaming_update(self, update: StreamingUpdate) -> None:
         # Apply the update to the request state.
@@ -271,7 +272,9 @@ class RequestState:
             req_state.return_progress = sampling_params.return_progress
             if req_state.return_progress:
                 import time
-                req_state.prompt_processing_start_time = time.time()
+                current_time = time.time()
+                req_state.prompt_processing_start_time = current_time
+                req_state.last_progress_time = current_time
         return req_state
 
     def make_request_output(
@@ -307,18 +310,30 @@ class RequestState:
             and is_still_prefilling
             and self.prompt_processing_start_time is not None
             and num_prompt_tokens > 0
-            and num_computed_tokens != self.last_progress_processed
         ):
             import time
 
-            elapsed_ms = (time.time() - self.prompt_processing_start_time) * 1000
-            prompt_progress = PromptProgress(
-                total=num_prompt_tokens,
-                cache=self.num_cached_tokens,
-                processed=num_computed_tokens,
-                time_ms=elapsed_ms,
+            current_time = time.time()
+            elapsed_ms = (current_time - self.prompt_processing_start_time) * 1000
+
+            # Send progress update if:
+            # 1. Processed count changed, OR
+            # 2. At least 100ms has passed since last update
+            time_since_last_update = current_time - self.last_progress_time
+            should_send_update = (
+                num_computed_tokens != self.last_progress_processed
+                or time_since_last_update >= 0.1  # 100ms interval
             )
-            self.last_progress_processed = num_computed_tokens
+
+            if should_send_update:
+                prompt_progress = PromptProgress(
+                    total=num_prompt_tokens,
+                    cache=self.num_cached_tokens,
+                    processed=num_computed_tokens,
+                    time_ms=elapsed_ms,
+                )
+                self.last_progress_processed = num_computed_tokens
+                self.last_progress_time = current_time
 
         # Check stream interval, but allow progress updates through
         if self.stream_interval > 1:
