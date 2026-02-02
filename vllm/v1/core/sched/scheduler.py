@@ -1376,10 +1376,17 @@ class Scheduler(SchedulerInterface):
                 import time
                 current_time = time.time()
                 last_update_time = self.last_progress_update_time.get(req_id, 0)
+                time_since_last = current_time - last_update_time
                 # Send progress if it's been more than 100ms since last update
-                if current_time - last_update_time >= 0.1:
+                logger.info(
+                    f"[PROGRESS] req={req_id[:8]}, computed={request.num_computed_tokens}/"
+                    f"{request.num_prompt_tokens}, time_since_last={time_since_last:.3f}s, "
+                    f"new_tokens={len(new_token_ids)}"
+                )
+                if time_since_last >= 0.1:
                     should_send_progress = True
                     self.last_progress_update_time[req_id] = current_time
+                    logger.info(f"[PROGRESS] Emitting progress for {req_id[:8]}")
 
             if (
                 new_token_ids
