@@ -889,8 +889,10 @@ class OpenAIServingChat(OpenAIServing):
                         not delta_text
                         and not output.token_ids
                         and not previous_num_tokens[i]
+                        and res.prompt_progress is None
                     ):
                         # Chunked prefill case, don't return empty chunks
+                        # unless we have progress information to send
                         continue
 
                     delta_message: DeltaMessage | None

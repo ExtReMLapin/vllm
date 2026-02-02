@@ -1362,11 +1362,20 @@ class Scheduler(SchedulerInterface):
 
             # Get prompt logprobs for this request.
             prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
+
+            # Check if we should send progress updates during prefill
+            should_send_progress = (
+                request.sampling_params is not None
+                and request.sampling_params.return_progress
+                and request.num_computed_tokens < request.num_prompt_tokens
+            )
+
             if (
                 new_token_ids
                 or pooler_output is not None
                 or kv_transfer_params
                 or stopped
+                or should_send_progress
             ):
                 # Add EngineCoreOutput for this Request.
                 outputs[request.client_index].append(

@@ -413,8 +413,10 @@ class OpenAIServingCompletion(OpenAIServing):
                             not delta_text
                             and not delta_token_ids
                             and not previous_num_tokens[i]
+                            and res.prompt_progress is None
                         ):
                             # Chunked prefill case, don't return empty chunks
+                            # unless we have progress information to send
                             continue
 
                     if request.logprobs is not None:

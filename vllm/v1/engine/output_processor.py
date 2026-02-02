@@ -292,29 +292,6 @@ class RequestState:
             # Only the final output is required in FINAL_ONLY mode.
             return None
 
-        if self.stream_interval > 1:
-            assert self.detokenizer is not None
-
-            # Send output request only when
-            # 1. It has finished, or
-            # 2. It is the first token, or
-            # 3. It has reached the stream interval number of tokens
-            if not (
-                finished
-                or self.sent_tokens_offset == 0
-                or len(self.detokenizer.output_token_ids) - self.sent_tokens_offset
-                >= self.stream_interval
-            ):
-                return None
-
-            if self.output_kind == RequestOutputKind.DELTA:
-                # Send tokens from the offset in DELTA mode, otherwise all
-                # tokens are sent.
-                new_token_ids = self.detokenizer.output_token_ids[
-                    self.sent_tokens_offset :
-                ]
-                self.sent_tokens_offset = len(self.detokenizer.output_token_ids)
-
         external_req_id = self.external_req_id
 
         # Calculate prompt progress if requested and still in prefill
@@ -342,6 +319,32 @@ class RequestState:
                 time_ms=elapsed_ms,
             )
             self.last_progress_processed = num_computed_tokens
+
+        # Check stream interval, but allow progress updates through
+        if self.stream_interval > 1:
+            assert self.detokenizer is not None
+
+            # Send output request only when
+            # 1. It has finished, or
+            # 2. It is the first token, or
+            # 3. It has reached the stream interval number of tokens, or
+            # 4. It has progress information to send
+            if not (
+                finished
+                or self.sent_tokens_offset == 0
+                or len(self.detokenizer.output_token_ids) - self.sent_tokens_offset
+                >= self.stream_interval
+                or prompt_progress is not None
+            ):
+                return None
+
+            if self.output_kind == RequestOutputKind.DELTA:
+                # Send tokens from the offset in DELTA mode, otherwise all
+                # tokens are sent.
+                new_token_ids = self.detokenizer.output_token_ids[
+                    self.sent_tokens_offset :
+                ]
+                self.sent_tokens_offset = len(self.detokenizer.output_token_ids)
 
         if pooling_output is not None:
             return self._new_request_output(
