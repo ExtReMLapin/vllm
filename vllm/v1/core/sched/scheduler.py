@@ -1455,6 +1455,36 @@ class Scheduler(SchedulerInterface):
             batch = KVEventBatch(ts=time.time(), events=events)
             self.kv_event_publisher.publish(batch)
 
+        # Check if any running requests need progress updates
+        # (for requests that weren't scheduled this iteration but are still in prefill)
+        import time
+        current_time = time.time()
+        for request in self.running:
+            req_id = request.request_id
+            # Skip if we already handled this request in the loop above
+            if req_id in num_scheduled_tokens:
+                continue
+            # Check if this request needs a progress update
+            if (
+                request.sampling_params is not None
+                and request.sampling_params.return_progress
+                and request.num_computed_tokens < request.num_prompt_tokens
+            ):
+                last_update_time = self.last_progress_update_time.get(req_id, 0)
+                if current_time - last_update_time >= 0.1:
+                    # Emit progress-only output
+                    outputs[request.client_index].append(
+                        EngineCoreOutput(
+                            request_id=req_id,
+                            new_token_ids=[],
+                            num_prompt_tokens=request.num_prompt_tokens,
+                            num_computed_tokens=request.num_computed_tokens,
+                            num_cached_tokens=request.num_cached_tokens,
+                            trace_headers=request.trace_headers,
+                        )
+                    )
+                    self.last_progress_update_time[req_id] = current_time
+
         # Create EngineCoreOutputs for all clients that have requests with
         # outputs in this step.
         engine_core_outputs = {
