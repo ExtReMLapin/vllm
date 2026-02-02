@@ -457,6 +457,15 @@ class OpenAIServingCompletion(OpenAIServing):
                             )
                         ],
                     )
+                    # Include prompt progress if available
+                    if res.prompt_progress is not None:
+                        from vllm.entrypoints.openai.engine.protocol import PromptProgressInfo
+                        chunk.prompt_progress = PromptProgressInfo(
+                            total=res.prompt_progress.total,
+                            cache=res.prompt_progress.cache,
+                            processed=res.prompt_progress.processed,
+                            time_ms=res.prompt_progress.time_ms,
+                        )
                     if include_continuous_usage:
                         prompt_tokens = num_prompt_tokens[prompt_idx]
                         completion_tokens = previous_num_tokens[i]

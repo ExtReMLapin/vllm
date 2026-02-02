@@ -770,6 +770,16 @@ class OpenAIServingChat(OpenAIServing):
                             ),
                         )
 
+                        # Include prompt progress if available
+                        if res.prompt_progress is not None:
+                            from vllm.entrypoints.openai.engine.protocol import PromptProgressInfo
+                            chunk.prompt_progress = PromptProgressInfo(
+                                total=res.prompt_progress.total,
+                                cache=res.prompt_progress.cache,
+                                processed=res.prompt_progress.processed,
+                                time_ms=res.prompt_progress.time_ms,
+                            )
+
                         # if continuous usage stats are requested, add it
                         if include_continuous_usage:
                             chunk.usage = UsageInfo(
@@ -807,6 +817,17 @@ class OpenAIServingChat(OpenAIServing):
                                     choices=[choice_data],
                                     model=model_name,
                                 )
+
+                                # Include prompt progress if available
+                                if res.prompt_progress is not None:
+                                    from vllm.entrypoints.openai.engine.protocol import PromptProgressInfo
+                                    chunk.prompt_progress = PromptProgressInfo(
+                                        total=res.prompt_progress.total,
+                                        cache=res.prompt_progress.cache,
+                                        processed=res.prompt_progress.processed,
+                                        time_ms=res.prompt_progress.time_ms,
+                                    )
+
                                 if include_continuous_usage:
                                     chunk.usage = UsageInfo(
                                         prompt_tokens=num_prompt_tokens,
@@ -1311,6 +1332,16 @@ class OpenAIServingChat(OpenAIServing):
                         choices=[choice_data],
                         model=model_name,
                     )
+
+                    # Include prompt progress if available
+                    if res.prompt_progress is not None:
+                        from vllm.entrypoints.openai.engine.protocol import PromptProgressInfo
+                        chunk.prompt_progress = PromptProgressInfo(
+                            total=res.prompt_progress.total,
+                            cache=res.prompt_progress.cache,
+                            processed=res.prompt_progress.processed,
+                            time_ms=res.prompt_progress.time_ms,
+                        )
 
                     # handle usage stats if requested & if continuous
                     if include_continuous_usage:

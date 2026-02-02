@@ -217,6 +217,13 @@ class SamplingParams(
     set to an integer k, will use only the last k tokens from the prompt
     (i.e., left truncation). If set to `None`, truncation is disabled."""
     output_kind: RequestOutputKind = RequestOutputKind.CUMULATIVE
+    return_progress: bool = False
+    """Include prompt processing progress in streaming mode. Only applies when
+    streaming is enabled. The progress will be contained inside `prompt_progress`
+    with 4 values: `total`, `cache`, `processed`, and `time_ms`. The overall
+    progress is `processed/total`, while the actual timed progress is
+    `(processed-cache)/(total-cache)`. The `time_ms` field contains the elapsed
+    time in milliseconds since prompt processing started."""
     skip_clone: bool = False
     """Internal flag indicating that this SamplingParams instance is safe to
     reuse without cloning. When True, clone() will return self without
@@ -278,6 +285,7 @@ class SamplingParams(
         logits_processors: list[LogitsProcessor] | None = None,
         truncate_prompt_tokens: Annotated[int, msgspec.Meta(ge=-1)] | None = None,
         output_kind: RequestOutputKind = RequestOutputKind.CUMULATIVE,
+        return_progress: bool = False,
         structured_outputs: StructuredOutputsParams | None = None,
         logit_bias: dict[int, float] | dict[str, float] | None = None,
         allowed_token_ids: list[int] | None = None,
@@ -319,6 +327,7 @@ class SamplingParams(
             logits_processors=logits_processors,
             truncate_prompt_tokens=truncate_prompt_tokens,
             output_kind=output_kind,
+            return_progress=return_progress,
             structured_outputs=structured_outputs,
             logit_bias=logit_bias,
             allowed_token_ids=allowed_token_ids,

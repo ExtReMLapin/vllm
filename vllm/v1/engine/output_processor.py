@@ -16,6 +16,7 @@ from vllm.outputs import (
     CompletionOutput,
     PoolingOutput,
     PoolingRequestOutput,
+    PromptProgress,
     RequestOutput,
 )
 from vllm.sampling_params import RequestOutputKind
@@ -180,6 +181,11 @@ class RequestState:
             deque() if stream_input else None
         )
 
+        # Progress tracking for prompt processing
+        self.return_progress = False
+        self.prompt_processing_start_time: float | None = None
+        self.last_progress_processed = 0
+
     def apply_streaming_update(self, update: StreamingUpdate) -> None:
         # Apply the update to the request state.
         self.streaming_input = not update.final
@@ -238,7 +244,7 @@ class RequestState:
             output_kind = request.pooling_params.output_kind
 
         assert request.external_req_id is not None
-        return cls(
+        req_state = cls(
             request_id=request.request_id,
             external_req_id=request.external_req_id,
             parent_req=parent_req,
@@ -260,6 +266,13 @@ class RequestState:
             stream_interval=stream_interval,
             stream_input=request.resumable,
         )
+        # Set return_progress from sampling_params
+        if sampling_params:
+            req_state.return_progress = sampling_params.return_progress
+            if req_state.return_progress:
+                import time
+                req_state.prompt_processing_start_time = time.time()
+        return req_state
 
     def make_request_output(
         self,
@@ -269,6 +282,8 @@ class RequestState:
         stop_reason: int | str | None,
         kv_transfer_params: dict[str, Any] | None = None,
         routed_experts: np.ndarray | None = None,
+        num_prompt_tokens: int = 0,
+        num_computed_tokens: int = 0,
     ) -> RequestOutput | PoolingRequestOutput | None:
         finished = finish_reason is not None
         final_only = self.output_kind == RequestOutputKind.FINAL_ONLY
@@ -302,11 +317,31 @@ class RequestState:
 
         external_req_id = self.external_req_id
 
+        # Calculate prompt progress if requested and still in prefill
+        prompt_progress: PromptProgress | None = None
+        if (
+            self.return_progress
+            and self.is_prefilling
+            and self.prompt_processing_start_time is not None
+            and num_computed_tokens > self.last_progress_processed
+        ):
+            import time
+
+            elapsed_ms = (time.time() - self.prompt_processing_start_time) * 1000
+            prompt_progress = PromptProgress(
+                total=num_prompt_tokens if num_prompt_tokens > 0 else self.prompt_len,
+                cache=self.num_cached_tokens,
+                processed=num_computed_tokens,
+                time_ms=elapsed_ms,
+            )
+            self.last_progress_processed = num_computed_tokens
+
         if pooling_output is not None:
             return self._new_request_output(
                 external_req_id,
                 [self._new_pooling_output(pooling_output)],
                 finished,
+                prompt_progress=prompt_progress,
             )
 
         output = self._new_completion_output(
@@ -322,7 +357,7 @@ class RequestState:
             external_req_id = self.parent_req.external_req_id
 
         return self._new_request_output(
-            external_req_id, outputs, finished, kv_transfer_params
+            external_req_id, outputs, finished, kv_transfer_params, prompt_progress
         )
 
     def _new_request_output(
@@ -331,6 +366,7 @@ class RequestState:
         outputs: list[CompletionOutput] | list[PoolingOutput],
         finished: bool,
         kv_transfer_params: dict[str, Any] | None = None,
+        prompt_progress: PromptProgress | None = None,
     ) -> RequestOutput | PoolingRequestOutput:
         first_output = outputs[0]
         if isinstance(first_output, PoolingOutput):
@@ -367,6 +403,7 @@ class RequestState:
             kv_transfer_params=kv_transfer_params,
             num_cached_tokens=self.num_cached_tokens,
             metrics=self.stats,
+            prompt_progress=prompt_progress,
         )
 
     def _new_completion_output(
@@ -648,6 +685,8 @@ class OutputProcessor:
                 stop_reason,
                 kv_transfer_params,
                 routed_experts,
+                engine_core_output.num_prompt_tokens,
+                engine_core_output.num_computed_tokens,
             ):
                 if req_state.streaming_input:
                     request_output.finished = False

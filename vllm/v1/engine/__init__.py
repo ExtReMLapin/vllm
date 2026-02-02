@@ -145,6 +145,9 @@ class EngineCoreOutput(
     # The number of NaNs in logits.
     # A value greater than 0 indicates that the output is corrupted.
     num_nans_in_logits: int = 0
+    # Progress tracking for prompt processing (prefill phase).
+    num_prompt_tokens: int = 0
+    num_computed_tokens: int = 0
 
     @property
     def finished(self) -> bool:

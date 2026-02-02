@@ -108,6 +108,17 @@ class UsageInfo(OpenAIBaseModel):
     prompt_tokens_details: PromptTokenUsageInfo | None = None
 
 
+class PromptProgressInfo(OpenAIBaseModel):
+    """Progress information for prompt processing (prefill phase)."""
+
+    total: int = Field(description="Total number of tokens in the prompt")
+    cache: int = Field(description="Number of cached tokens (from prefix cache)")
+    processed: int = Field(description="Number of tokens processed so far")
+    time_ms: float = Field(
+        description="Elapsed time in milliseconds since prompt processing started"
+    )
+
+
 class RequestResponseMetadata(BaseModel):
     request_id: str
     final_usage_info: UsageInfo | None = None

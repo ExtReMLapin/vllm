@@ -17,6 +17,7 @@ from vllm.entrypoints.openai.engine.protocol import (
     LegacyStructuralTagResponseFormat,
     LogitsProcessors,
     OpenAIBaseModel,
+    PromptProgressInfo,
     StreamOptions,
     StructuralTagResponseFormat,
     UsageInfo,
@@ -56,6 +57,17 @@ class CompletionRequest(OpenAIBaseModel):
     stop: str | list[str] | None = []
     stream: bool | None = False
     stream_options: StreamOptions | None = None
+    return_progress: bool | None = Field(
+        default=False,
+        description=(
+            "Include prompt processing progress in stream mode. The progress "
+            "will be contained inside `prompt_progress` with 4 values: `total`, "
+            "`cache`, `processed`, and `time_ms`. The overall progress is "
+            "`processed/total`, while the actual timed progress is "
+            "`(processed-cache)/(total-cache)`. The `time_ms` field contains "
+            "the elapsed time in milliseconds since prompt processing started."
+        ),
+    )
     suffix: str | None = None
     temperature: float | None = None
     top_p: float | None = None
@@ -319,6 +331,7 @@ class CompletionRequest(OpenAIBaseModel):
             output_kind=RequestOutputKind.DELTA
             if self.stream
             else RequestOutputKind.FINAL_ONLY,
+            return_progress=self.return_progress if self.return_progress else False,
             structured_outputs=self.structured_outputs,
             logit_bias=self.logit_bias,
             allowed_token_ids=self.allowed_token_ids,
@@ -478,3 +491,4 @@ class CompletionStreamResponse(OpenAIBaseModel):
     model: str
     choices: list[CompletionResponseStreamChoice]
     usage: UsageInfo | None = Field(default=None)
+    prompt_progress: PromptProgressInfo | None = Field(default=None)

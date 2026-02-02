@@ -20,6 +20,29 @@ logger = init_logger(__name__)
 
 
 @dataclass
+class PromptProgress:
+    """Progress information for prompt processing (prefill phase).
+
+    Args:
+        total: Total number of tokens in the prompt.
+        cache: Number of cached tokens (from prefix cache).
+        processed: Number of tokens processed so far.
+        time_ms: Elapsed time in milliseconds since prompt processing started.
+    """
+
+    total: int
+    cache: int
+    processed: int
+    time_ms: float
+
+    def __repr__(self) -> str:
+        return (
+            f"PromptProgress(total={self.total}, cache={self.cache}, "
+            f"processed={self.processed}, time_ms={self.time_ms})"
+        )
+
+
+@dataclass
 class CompletionOutput:
     """The output data of one completion output of a request.
 
@@ -105,6 +128,7 @@ class RequestOutput:
                                   None if decoder-only.
         num_cached_tokens: The number of tokens with prefix cache hit.
         kv_transfer_params: The params for remote K/V transfer.
+        prompt_progress: Progress information for prompt processing.
     """
 
     def __init__(
@@ -123,6 +147,7 @@ class RequestOutput:
         *,
         multi_modal_placeholders: MultiModalPlaceholderDict | None = None,
         kv_transfer_params: dict[str, Any] | None = None,
+        prompt_progress: PromptProgress | None = None,
         # Forward compatibility, code that uses args added in new release can
         # still run with older versions of vLLM without breaking.
         **kwargs: Any,
@@ -144,6 +169,7 @@ class RequestOutput:
         self.encoder_prompt_token_ids = encoder_prompt_token_ids
         self.num_cached_tokens = num_cached_tokens
         self.kv_transfer_params = kv_transfer_params
+        self.prompt_progress = prompt_progress
 
     def add(self, next_output: "RequestOutput", aggregate: bool) -> None:
         """Merge subsequent RequestOutput into this one"""
@@ -188,7 +214,8 @@ class RequestOutput:
             f"metrics={self.metrics}, "
             f"lora_request={self.lora_request}, "
             f"num_cached_tokens={self.num_cached_tokens}, "
-            f"multi_modal_placeholders={self.multi_modal_placeholders})"
+            f"multi_modal_placeholders={self.multi_modal_placeholders}, "
+            f"prompt_progress={self.prompt_progress})"
         )
 
 
