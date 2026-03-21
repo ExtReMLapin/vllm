@@ -897,10 +897,39 @@ class OpenAIServing:
             request.tool_choice, ChatCompletionNamedToolChoiceParam
         ):
             assert content is not None
-            # Forced Function Call
-            function_calls.append(
-                FunctionCall(name=request.tool_choice.function.name, arguments=content)
-            )
+            func_name = request.tool_choice.function.name
+            # If a tool parser is available (e.g. Qwen3XMLToolParser), use it to
+            # parse the model output which may contain XML-formatted tool calls
+            # (<tool_call>...</tool_call>) including reasoning (<think>...</think>).
+            if tool_parser_cls and tokenizer and content:
+                try:
+                    tool_parser = tool_parser_cls(tokenizer)
+                    tool_call_info = tool_parser.extract_tool_calls(
+                        content, request=request  # type: ignore
+                    )
+                    if tool_call_info.tools_called and tool_call_info.tool_calls:
+                        for tc in tool_call_info.tool_calls:
+                            function_calls.append(
+                                FunctionCall(
+                                    name=tc.function.name,
+                                    arguments=tc.function.arguments,
+                                )
+                            )
+                    else:
+                        # Fallback: use raw content as arguments
+                        function_calls.append(
+                            FunctionCall(name=func_name, arguments=content)
+                        )
+                except Exception:
+                    # Fallback: use raw content as arguments
+                    function_calls.append(
+                        FunctionCall(name=func_name, arguments=content)
+                    )
+            else:
+                # No tool parser: treat entire content as arguments
+                function_calls.append(
+                    FunctionCall(name=func_name, arguments=content)
+                )
             content = None  # Clear content since tool is called.
         elif request.tool_choice == "required":
             tool_calls = []

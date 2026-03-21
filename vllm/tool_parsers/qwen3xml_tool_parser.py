@@ -10,6 +10,7 @@ import regex as re
 
 from vllm.entrypoints.chat_utils import make_tool_call_id
 from vllm.entrypoints.openai.chat_completion.protocol import (
+    ChatCompletionNamedToolChoiceParam,
     ChatCompletionRequest,
     ChatCompletionToolsParam,
 )
@@ -1178,6 +1179,19 @@ class Qwen3XMLToolParser(ToolParser):
         logger.info(
             "vLLM Successfully import tool parser %s !", self.__class__.__name__
         )
+
+    def adjust_request(self, request: ChatCompletionRequest) -> ChatCompletionRequest:
+        if not request.tools:
+            return request
+        if isinstance(request.tool_choice, ChatCompletionNamedToolChoiceParam):
+            # Do NOT apply JSON schema for named function tool_choice.
+            # Qwen3 generates XML-formatted tool calls (<tool_call>...</tool_call>)
+            # and applying a JSON schema would force the model to emit raw JSON
+            # from the first token, suppressing <think> reasoning entirely.
+            # The XML output is parsed downstream by extract_tool_calls /
+            # extract_tool_calls_streaming instead.
+            return request
+        return super().adjust_request(request)
 
     def extract_tool_calls(
         self,
