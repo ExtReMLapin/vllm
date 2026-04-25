@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from vllm.entrypoints.openai.engine.protocol import DeltaMessage
 from vllm.reasoning.basic_parsers import BaseThinkingReasoningParser
+from vllm.tool_parsers.utils import partial_tag_overlap
 
 if TYPE_CHECKING:
     from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
@@ -69,14 +70,14 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         for i in range(len(input_ids) - 1, -1, -1):
             token_id = input_ids[i]
             if token_id == start_token_id:
-                # Found <think> before </think> or <tool_call>
                 return False
             if token_id == end_token_id:
                 return True
             if tool_call_token_id is not None and token_id == tool_call_token_id:
-                # Only treat as implicit reasoning end if this <tool_call>
-                # is NOT followed by </tool_call>.  Paired occurrences are
-                # template examples in the prompt, not model output.
+                # Skip <tool_call> tokens that are paired with a subsequent
+                # </tool_call> — these appear in system-prompt tool examples
+                # and must not be mistaken for an implicit reasoning end.
+                # Unpaired <tool_call> (model output) still signals the end.
                 if tool_call_end_token_id is not None and any(
                     input_ids[j] == tool_call_end_token_id
                     for j in range(i + 1, len(input_ids))
@@ -101,14 +102,13 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         result = super().extract_content_ids(input_ids)
         if result:
             return result
-        # Fall back: content starts at <tool_call> (implicit reasoning end).
+        # Fall back: content starts at the FIRST <tool_call> 
+        # (implicit reasoning end).
         if (
             self._tool_call_token_id is not None
             and self._tool_call_token_id in input_ids
         ):
-            tool_call_index = (
-                len(input_ids) - 1 - input_ids[::-1].index(self._tool_call_token_id)
-            )
+            tool_call_index = input_ids.index(self._tool_call_token_id)
             return input_ids[tool_call_index:]
         return []
 
@@ -141,7 +141,7 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
 
         if self.end_token in model_output:
             reasoning, _, content = model_output.partition(self.end_token)
-            return reasoning, content or None
+            return reasoning or None, content or None
 
         if not self.thinking_enabled:
             # Thinking explicitly disabled — treat everything as content.
@@ -200,32 +200,64 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             # end_token_id in IDs but not in text (already stripped)
             return None
 
+        # No end token in this delta.
+        if not delta_text:
+            # Nothing left after stripping start token.
+            return None
+        
+        # If thinking already ended, everything is content.
+        if (self.end_token_id in previous_token_ids or 
+            (self._tool_call_token_id is not None and 
+             self._tool_call_token_id in previous_token_ids) or
+            (bool(self._tool_call_tag) and 
+             self._tool_call_tag in previous_text)):
+            return DeltaMessage(content=delta_text)
+
         # Implicit reasoning end via <tool_call>.
-        if (
+        has_tool_call_id = (
             self._tool_call_token_id is not None
             and self._tool_call_token_id in delta_token_ids
-        ):
-            tool_index = delta_text.find(self._tool_call_tag)
-            if tool_index >= 0:
-                reasoning = delta_text[:tool_index]
-                content = delta_text[tool_index:]
+        )
+        just_completed_tool_call_tag = (
+            bool(self._tool_call_tag)
+            and self._tool_call_tag in current_text
+            and self._tool_call_tag not in previous_text
+        )
+
+        if has_tool_call_id or just_completed_tool_call_tag:
+            if self._tool_call_tag and self._tool_call_tag in current_text:
+                tag_start_idx = current_text.find(self._tool_call_tag)
+                delta_start_idx = len(previous_text)
+                
+                if tag_start_idx >= delta_start_idx:
+                    reasoning_len = tag_start_idx - delta_start_idx
+                    reasoning = delta_text[:reasoning_len]
+                    content = delta_text[reasoning_len:]
+                else:
+                    # Part of the tag was already emitted as reasoning.
+                    # We MUST emit the full tag as content for the tool parser,
+                    # but we avoid emitting it as reasoning in this delta.
+                    reasoning = None
+                    content = current_text[tag_start_idx:]
+                
                 return DeltaMessage(
                     reasoning=reasoning if reasoning else None,
                     content=content if content else None,
                 )
 
-        # No end token in this delta.
-        if not delta_text:
-            # Nothing left after stripping start token.
-            return None
-        elif self.end_token_id in previous_token_ids:
-            # End token already passed: everything is content now.
-            return DeltaMessage(content=delta_text)
-        elif (
-            self._tool_call_token_id is not None
-            and self._tool_call_token_id in previous_token_ids
-        ):
-            return DeltaMessage(content=delta_text)
-        else:
-            # No end token yet: still in reasoning phase.
-            return DeltaMessage(reasoning=delta_text)
+        # To avoid leaking fragments of <tool_call> into reasoning, 
+        # check for partial overlap.
+        # Before this fix we had the partial tool call tag being (partially)
+        # duplicated in reasoning and in content.
+        
+        overlap = partial_tag_overlap(current_text, self._tool_call_tag)
+        if overlap > 0:
+            sendable_reasoning_len = len(delta_text) - overlap
+            if sendable_reasoning_len > 0:
+                return DeltaMessage(reasoning=delta_text[:sendable_reasoning_len])
+            # Return an empty message instead of None to satisfy tests
+            # and indicate that processing is ongoing but no new content is ready.
+            return DeltaMessage()
+
+        # No end token yet: still in reasoning phase.
+        return DeltaMessage(reasoning=delta_text)
