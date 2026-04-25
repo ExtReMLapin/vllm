@@ -126,11 +126,20 @@ class Qwen3CoderToolParser(ToolParser):
                 )
             return param_value
 
+        # ``allows_null`` is True when the schema explicitly admits a
+        # null value (either via ``"type": "null"`` or in an ``anyOf``
+        # union).  A nullable parameter must convert the literal
+        # ``"null"`` / ``"None"`` to JSON null even when the primary
+        # type is ``string`` — otherwise a Qwen3.5-trained model that
+        # emits the Python ``None`` literal leaves the client with the
+        # string ``"None"`` for a nullable optional.
+        allows_null = False
         if (
             isinstance(param_config[param_name], dict)
             and "type" in param_config[param_name]
         ):
             param_type = str(param_config[param_name]["type"]).strip().lower()
+            allows_null = param_type == "null"
         elif (
             isinstance(param_config[param_name], dict)
             and "anyOf" in param_config[param_name]
@@ -139,14 +148,21 @@ class Qwen3CoderToolParser(ToolParser):
             # nullable schemas like {"anyOf": [{"type": "string"},
             # {"type": "null"}]} behave as "string", not "object".
             param_type = "string"
+            picked = False
             for option in param_config[param_name]["anyOf"]:
                 if isinstance(option, dict) and "type" in option:
                     opt_type = str(option["type"]).strip().lower()
-                    if opt_type != "null":
+                    if opt_type == "null":
+                        allows_null = True
+                    elif not picked:
                         param_type = opt_type
-                        break
+                        picked = True
         else:
             param_type = "string"
+        # Nullable schemas: recognise "null" / "None" up front so a
+        # string-typed nullable still maps to JSON null.
+        if allows_null and param_value.lower() in ("null", "none"):
+            return None
         # String type takes precedence: preserve the raw value (including
         # the literal "null") rather than converting it to Python None.
         if param_type in ["string", "str", "text", "varchar", "char", "enum"]:
@@ -488,8 +504,12 @@ class Qwen3CoderToolParser(ToolParser):
         A ``</parameter>`` is structural only when it is followed by
         another structural delimiter (schema-known ``<parameter=NAME>``,
         ``</function>``, ``</tool_call>``) or — in non-streaming mode —
-        end-of-string.  Nested structural ``<parameter=NAME>`` tags
-        decrement depth like matched openings.
+        end-of-string.  Nested ``<parameter=NAME>`` opens are tracked
+        for depth REGARDLESS of whether NAME is in the schema: a
+        literal nested tool_call may use NAMEs that are not in the
+        outer tool's schema, but its literal ``</parameter>`` still
+        pairs with the literal open and must not be mistaken for a
+        structural close.
 
         Returns the index of the true ``</parameter>`` in value_text, or
         -1 if incomplete.
@@ -500,8 +520,13 @@ class Qwen3CoderToolParser(ToolParser):
         param_end_len = len(self.parameter_end_token)
 
         while pos < len(value_text):
+            # Use UNFILTERED structural opens for depth tracking so that
+            # a literal ``<parameter=UNKNOWN>`` (NAME not in the outer
+            # schema) still increments depth and its matching literal
+            # ``</parameter>`` is balanced — otherwise that close would
+            # appear unmatched and pass the structural lookahead.
             next_open = self._next_structural_param_start(
-                value_text, pos, valid_param_names
+                value_text, pos, None
             )
             next_close = value_text.find(self.parameter_end_token, pos)
             if next_close == -1:
@@ -539,6 +564,21 @@ class Qwen3CoderToolParser(ToolParser):
 
         return -1
 
+    @staticmethod
+    def _is_valid_function_name(name: str) -> bool:
+        """Return True when ``name`` looks like a real function identifier
+        and not a stray template token, malformed tag, or freeform text.
+
+        Rejects names that contain template-syntax characters (``{``,
+        ``}``, ``<``, ``>``), whitespace, quotes, or are empty.  Permits
+        identifiers, dashes (``max-retries``), dots (``user.name``),
+        slashes (``namespace/tool``), and Unicode letters.
+        """
+        if not name:
+            return False
+        forbidden = set("{}<>\"' \t\n\r")
+        return not any(c in forbidden for c in name)
+
     def _parse_xml_function_call(self, function_call_str: str) -> ToolCall | None:
         # Extract function name
         end_index = function_call_str.find(">")
@@ -546,6 +586,13 @@ class Qwen3CoderToolParser(ToolParser):
         if end_index == -1:
             return None
         function_name = function_call_str[:end_index]
+        # Reject phantom tool calls produced when the model writes an
+        # unrendered Jinja template or pseudo-XML in its response (e.g.
+        # ``<function={{ tc.name }}>``).  Surfacing such names as real
+        # tool calls causes "tool not found" errors at the client and
+        # makes agents loop.
+        if not self._is_valid_function_name(function_name):
+            return None
         param_config = find_tool_properties(self.tools, function_name)
         valid_param_names: set[str] | None = (
             set(param_config.keys()) if param_config else None
@@ -717,11 +764,43 @@ class Qwen3CoderToolParser(ToolParser):
                         }
                     )
 
-            # Extract content before tool calls
-            content_index = model_output.find(self.tool_call_start_token)
-            idx = model_output.find(self.tool_call_prefix)
-            content_index = content_index if content_index >= 0 else idx
-            content = model_output[:content_index]  # .rstrip()
+            # Extract content before tool calls.  Anchor at the FIRST
+            # ``<tool_call>`` that contains a real ``<function=NAME>``
+            # opener — a bare ``<tool_call>...</tool_call>`` written by
+            # the model in its narrative text (no function inside) is
+            # NOT a real tool call and the surrounding text MUST stay
+            # in ``content``.
+            content_index = -1
+            search_pos = 0
+            tc_start_token = self.tool_call_start_token
+            tc_end_token = self.tool_call_end_token
+            while True:
+                tc_pos = model_output.find(tc_start_token, search_pos)
+                if tc_pos == -1:
+                    break
+                tc_close = model_output.find(
+                    tc_end_token, tc_pos + len(tc_start_token)
+                )
+                # Look for a ``<function=`` inside this tool_call block
+                # (or up to end-of-string if the block isn't closed).
+                limit = tc_close if tc_close != -1 else len(model_output)
+                func_pos = model_output.find(
+                    self.tool_call_prefix, tc_pos + len(tc_start_token), limit
+                )
+                if func_pos != -1:
+                    content_index = tc_pos
+                    break
+                search_pos = (
+                    tc_close + len(tc_end_token) if tc_close != -1 else limit
+                )
+            if content_index == -1:
+                # No structural ``<tool_call>`` block contains a
+                # ``<function=``: fall back to the standalone
+                # ``<function=`` position (legacy behaviour).
+                content_index = model_output.find(self.tool_call_prefix)
+            content = (
+                model_output[:content_index] if content_index >= 0 else model_output
+            )
             valid_tool_calls = [tc for tc in tool_calls if tc is not None]
             return ExtractedToolCallInformation(
                 tools_called=(len(valid_tool_calls) > 0),
