@@ -334,7 +334,7 @@ class LLM:
                 f"LLM(data_parallel_size={_dp_size}) is not supported for single-"
                 "process usage and may hang. Please use "
                 "the explicit multi-process data-parallel example at "
-                "'examples/features/data_parallel/data_parallel_offline.py'."
+                "'examples/offline_inference/data_parallel.py'."
             )
 
         engine_args = EngineArgs(

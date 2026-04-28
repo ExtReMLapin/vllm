@@ -171,8 +171,7 @@ _TEXT_GENERATION_MODELS = {
     "MptForCausalLM": ("mpt", "MPTForCausalLM"),
     "MPTForCausalLM": ("mpt", "MPTForCausalLM"),
     "MiMoForCausalLM": ("mimo", "MiMoForCausalLM"),
-    "MiMoV2FlashForCausalLM": ("mimo_v2", "MiMoV2FlashForCausalLM"),
-    "MiMoV2ForCausalLM": ("mimo_v2", "MiMoV2ForCausalLM"),
+    "MiMoV2FlashForCausalLM": ("mimo_v2_flash", "MiMoV2FlashForCausalLM"),
     "NemotronForCausalLM": ("nemotron", "NemotronForCausalLM"),
     "NemotronHForCausalLM": ("nemotron_h", "NemotronHForCausalLM"),
     "NemotronHPuzzleForCausalLM": ("nemotron_h", "NemotronHForCausalLM"),
@@ -469,7 +468,6 @@ _MULTIMODAL_MODELS = {
     ),
     "MantisForConditionalGeneration": ("llava", "MantisForConditionalGeneration"),
     "MiDashengLMModel": ("midashenglm", "MiDashengLMModel"),
-    "MiMoV2OmniForCausalLM": ("mimo_v2_omni", "MiMoV2OmniForCausalLM"),
     "MiniMaxVL01ForConditionalGeneration": (
         "minimax_vl_01",
         "MiniMaxVL01ForConditionalGeneration",
@@ -572,8 +570,6 @@ _MULTIMODAL_MODELS = {
 _SPECULATIVE_DECODING_MODELS = {
     "ExtractHiddenStatesModel": ("extract_hidden_states", "ExtractHiddenStatesModel"),
     "MiMoMTPModel": ("mimo_mtp", "MiMoMTP"),
-    "MiMoV2MTPModel": ("mimo_v2_mtp", "MiMoV2MTP"),
-    "MiMoV2OmniMTPModel": ("mimo_v2_mtp", "MiMoV2OmniMTP"),
     "EagleLlamaForCausalLM": ("llama_eagle", "EagleLlamaForCausalLM"),
     "EagleLlama4ForCausalLM": ("llama4_eagle", "EagleLlama4ForCausalLM"),
     "EagleMiniCPMForCausalLM": ("minicpm_eagle", "EagleMiniCPMForCausalLM"),

@@ -20,8 +20,6 @@ from vllm.v1.worker.gpu.attn_utils import (
 )
 from vllm.v1.worker.gpu.block_table import BlockTables
 from vllm.v1.worker.gpu.cudagraph_utils import (
-    BatchExecutionDescriptor,
-    CapturedAttentionState,
     get_uniform_token_count,
 )
 from vllm.v1.worker.gpu.dp_utils import dispatch_cg_and_sync_dp
@@ -29,8 +27,7 @@ from vllm.v1.worker.gpu.input_batch import InputBatch, InputBuffers
 from vllm.v1.worker.gpu.model_states.interface import ModelState
 from vllm.v1.worker.gpu.sample.gumbel import gumbel_sample
 from vllm.v1.worker.gpu.spec_decode.eagle.cudagraph import (
-    DecodeEagleCudaGraphManager,
-    PrefillEagleCudaGraphManager,
+    EagleCudaGraphManager,
 )
 from vllm.v1.worker.gpu.spec_decode.eagle.utils import load_eagle_model
 
@@ -111,13 +108,13 @@ class EagleSpeculator:
                 device=device,
             )
 
-        self.prefill_cudagraph_manager: PrefillEagleCudaGraphManager | None = None
-        self.decode_cudagraph_manager: DecodeEagleCudaGraphManager | None = None
+        self.prefill_cudagraph_manager: EagleCudaGraphManager | None = None
+        self.decode_cudagraph_manager: EagleCudaGraphManager | None = None
 
     def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
         cudagraph_mode = self.vllm_config.compilation_config.cudagraph_mode
         # Initialize cudagraph manager for draft prefill (draft position 0).
-        self.prefill_cudagraph_manager = PrefillEagleCudaGraphManager(
+        self.prefill_cudagraph_manager = EagleCudaGraphManager(
             self.vllm_config,
             self.device,
             cudagraph_mode,
@@ -134,7 +131,7 @@ class EagleSpeculator:
             cudagraph_mode = CUDAGraphMode.NONE
 
         # Initialize cudagraph manager for draft decodes (draft positions > 0).
-        self.decode_cudagraph_manager = DecodeEagleCudaGraphManager(
+        self.decode_cudagraph_manager = EagleCudaGraphManager(
             self.vllm_config,
             self.device,
             cudagraph_mode,
@@ -363,10 +360,7 @@ class EagleSpeculator:
         )
         return attn_metadata
 
-    def capture(
-        self,
-        attn_states: dict[BatchExecutionDescriptor, CapturedAttentionState],
-    ) -> None:
+    def capture_model(self) -> None:
         logger.info("Capturing model for Eagle speculator...")
         # Reset indices to zeros to prevent stale values from prior
         # dummy runs to cause out-of-bounds indexing during capture.
@@ -380,7 +374,11 @@ class EagleSpeculator:
         assert self.prefill_cudagraph_manager is not None
         self.prefill_cudagraph_manager.capture(
             self.prefill,
-            attn_states,
+            self.model_state,
+            self.input_buffers,
+            self.block_tables,
+            self.attn_groups,
+            self.kv_cache_config,
             progress_bar_desc="Capturing eagle prefill CUDA graphs",
         )
 
@@ -485,6 +483,15 @@ class EagleSpeculator:
         )
 
         if prefill_batch_desc.cg_mode == CUDAGraphMode.FULL:
+            # It is necessary to rebuild the attention metadata when
+            # replaying the FULL graph so that any attention metadata
+            # builder state is updated.
+            self._build_draft_attn_metadata(
+                num_reqs=num_reqs,
+                num_reqs_padded=prefill_batch_desc.num_reqs or num_reqs,
+                num_tokens_padded=prefill_batch_desc.num_tokens,
+                max_query_len=self.num_speculative_steps + 1,
+            )
             # Replay the full graph for draft prefill.
             assert self.prefill_cudagraph_manager is not None
             self.prefill_cudagraph_manager.run_fullgraph(prefill_batch_desc)

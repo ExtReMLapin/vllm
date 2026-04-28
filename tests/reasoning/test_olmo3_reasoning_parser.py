@@ -41,12 +41,6 @@ SIMPLE_REASONING_WITH_MULTIPLE_NEWLINES = {
     "content": "\n\n\nThis is the rest",
 }
 
-SIMPLE_REASONING_WITH_TRAILING_SPACE = {
-    "output": f"{START_REASONING}\nLook!\nI'm thinking... {END_REASONING}\nThis is the rest",  # noqa: E501
-    "reasoning": "\nLook!\nI'm thinking... ",
-    "content": "\nThis is the rest",
-}
-
 NO_REASONING_ONLY_END_THINK = {
     "output": f"{END_REASONING}\n\nNo thoughts, head empty!",
     "reasoning": None,
@@ -122,11 +116,6 @@ TEST_CASES = [
     ),
     pytest.param(
         True,  # enable streaming
-        SIMPLE_REASONING_WITH_TRAILING_SPACE,
-        id="simple_reasoning_with_trailing_space_streaming",
-    ),
-    pytest.param(
-        True,  # enable streaming
         NO_REASONING_ONLY_END_THINK,
         id="no_reasoning_only_end_think_streaming",
     ),
@@ -138,7 +127,7 @@ TEST_CASES = [
 ]
 
 # Global tokenizer initialization to avoid repeated loading
-tokenizer = AutoTokenizer.from_pretrained("allenai/Olmo-3-7B-Think")
+tokenizer = AutoTokenizer.from_pretrained("allenai/dolma2-tokenizer")
 
 
 @pytest.mark.parametrize("streaming, param_dict", TEST_CASES)
